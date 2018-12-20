@@ -1,0 +1,143 @@
+package fi.kela.drools.logistics.rules
+
+import fi.kela.drools.logistics.data.Product;
+import fi.kela.drools.logistics.data.TransportationCosts;
+import fi.kela.drools.logistics.data.Transportation;
+import fi.kela.drools.logistics.data.TripStep;
+import fi.kela.drools.logistics.data.Trip;
+import fi.kela.drools.logistics.data.Pallet;
+import fi.kela.drools.logistics.data.OrderLine;
+import fi.kela.drools.logistics.data.City;
+import java.util.Set;
+import java.util.HashSet;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/*
+rule "FirstRuleOnProduct"
+    when
+        $product : Product()
+    then
+        Logger logger = LoggerFactory.getLogger(drools.getRule().getName());
+        logger.info("Product exists: " + $product.toString());
+end
+*/
+
+rule "Pallets per bulk products"
+    ruleflow-group "group1"
+    when
+    	$costs : TransportationCosts()
+        $orderLine : OrderLine(product.type == Product.TYPE_BULK)
+    then
+    	Logger logger = LoggerFactory.getLogger(drools.getRule().getName());
+    	int nPallets = (int) Math.ceil($orderLine.getQuantity() /  Pallet.MAX_KG);
+    	$costs.setNumberOfPallets($costs.getNumberOfPallets() + nPallets);
+        logger.info("Added " + nPallets + " pallets for " + $orderLine.getQuantity() + " kg of " + $orderLine.getProduct().getName());        
+end
+
+rule "Pallets per individual products"
+    ruleflow-group "group1"
+    when
+    	$costs : TransportationCosts()
+        $orderLine : OrderLine(product.type == Product.TYPE_INDIVIDUAL)
+    then
+    	Logger logger = LoggerFactory.getLogger(drools.getRule().getName());
+    	int nPallets = $orderLine.getQuantity();
+    	$costs.setNumberOfPallets($costs.getNumberOfPallets() + nPallets);
+        logger.info("Added " + nPallets + " pallets for " + $orderLine.getQuantity() + " individual products of type " + $orderLine.getProduct().getName());        
+end
+
+rule "Pallets per palleted products"
+    ruleflow-group "group1"
+    when
+    	$costs : TransportationCosts()
+        $orderLine : OrderLine(product.type == Product.TYPE_PALLET)
+    then
+    	Logger logger = LoggerFactory.getLogger(drools.getRule().getName());
+    	int productsPerPallet = (int) (Math.floor(Pallet.WIDTH_CM / $orderLine.getProduct().getWidthCm()) *
+    		Math.floor(Pallet.DEPTH_CM / $orderLine.getProduct().getDepthCm()) *
+    		Math.floor(Pallet.HEIGHT_CM / $orderLine.getProduct().getHeightCm()));
+    	logger.info(productsPerPallet + " products of type " + $orderLine.getProduct().getName() + " can be fit in a pallet");
+    	logger.info($orderLine.getQuantity() + " products of type " + $orderLine.getProduct().getName() + " have been ordered");
+    	int nPallets = (int) Math.ceil( ((double)$orderLine.getQuantity()) / productsPerPallet);
+    	$costs.setNumberOfPallets($costs.getNumberOfPallets() + nPallets);
+        logger.info("Added " + nPallets + " pallets for " + $orderLine.getQuantity() + " palleted products of type " + $orderLine.getProduct().getName());        
+end
+
+rule "Total weight of palleted products"
+    ruleflow-group "group1"
+    when
+    	$costs : TransportationCosts()
+        $orderLine : OrderLine(product.type in (Product.TYPE_PALLET, Product.TYPE_INDIVIDUAL))
+    then
+    	Logger logger = LoggerFactory.getLogger(drools.getRule().getName());
+    	double weightAdded = $orderLine.getQuantity() * $orderLine.getProduct().getWeightKg();
+    	$costs.setTotalWeightOfOrder($costs.getTotalWeightOfOrder() + weightAdded);
+        logger.info("Added " + weightAdded + " kg weight for " + $orderLine.getQuantity() + " products of type " 
+        	+ $orderLine.getProduct().getName() + ", weighing " + $orderLine.getProduct().getWeightKg() + " each");        
+end
+
+rule "Total weight of bulk products"
+    ruleflow-group "group1"
+    when
+    	$costs : TransportationCosts()
+        $orderLine : OrderLine(product.type == Product.TYPE_BULK)
+    then
+    	Logger logger = LoggerFactory.getLogger(drools.getRule().getName());
+    	double weightAdded = $orderLine.getQuantity();
+    	$costs.setTotalWeightOfOrder($costs.getTotalWeightOfOrder() + weightAdded);
+        logger.info("Added " + weightAdded + " kg weight for " + $orderLine.getQuantity() + " kg of " 
+        	+ $orderLine.getProduct().getName());        
+end
+
+rule "Transport costs"
+    ruleflow-group "group2"
+    when
+    	$costs : TransportationCosts()
+        $trip : Trip()
+    then
+    	Logger logger = LoggerFactory.getLogger(drools.getRule().getName());
+    	for(TripStep tripStep:$trip.getSteps()){
+	    	double transCosts = $costs.getNumberOfPallets() * tripStep.getDistanceKm() * tripStep.getTransportation().getCostPerPalletPerKmEuro(); 
+    		$costs.setTransportCostsEuro($costs.getTransportCostsEuro() + transCosts);
+        	logger.info("Added " + transCosts + " € transportation cost for " + $costs.getNumberOfPallets() + " pallets for " + 
+         		tripStep.getDistanceKm() + " km with " + tripStep.getTransportation().getType());
+        }        
+end
+
+rule "Taxes"
+    ruleflow-group "group3"
+    when
+    	$costs : TransportationCosts()
+        $trip : Trip()
+    then
+    	Logger logger = LoggerFactory.getLogger(drools.getRule().getName());
+    	// Now, loop through to cities and calculate taxes - we need number of persons and weight of products for this
+    	for(City city:$trip.getTripCities()){
+    		double taxesWeight = city.getTaxPerKgEuro() * $costs.getTotalWeightOfOrder();
+    		int personsNeeded = (int) Math.ceil($costs.getNumberOfPallets() / city.getPalletsPerPersonPerHour() / TransportationCosts.MAX_HANDLING_HOURS);
+    		double taxesPersonnel = city.getTaxPerPersonEuro() * personsNeeded;
+	    	$costs.setTaxesEuro($costs.getTaxesEuro() + taxesWeight + taxesPersonnel); 		
+	        logger.info("Added " + taxesWeight + " € tax for " + $costs.getTotalWeightOfOrder() + " kg of weight since in " + 
+    	     city.getName() + " you pay " + city.getTaxPerKgEuro() + "€ tax per kg");        
+	        logger.info("Added " + taxesPersonnel + " € tax for " + personsNeeded + " persons since in " + 
+    	     city.getName() + " you pay " + city.getTaxPerPersonEuro() + "€ tax per handling person, and each person here can handle " +
+    	     city.getPalletsPerPersonPerHour() + " pallets per hour and there are " + $costs.getNumberOfPallets() + " pallets " );        
+    	}
+end
+
+rule "Handling costs"
+    ruleflow-group "group4"
+    when
+    	$costs : TransportationCosts()
+        $trip : Trip()
+    then
+    	Logger logger = LoggerFactory.getLogger(drools.getRule().getName());
+    	for(City city:$trip.getTripCities()){
+    		double handlingCost = city.getPersonCostPerHourEuro() * ($costs.getNumberOfPallets() / city.getPalletsPerPersonPerHour());
+	    	$costs.setHandlingCostsEuro($costs.getHandlingCostsEuro() + handlingCost); 		
+	        logger.info("Added " + handlingCost + " € handling cost for " + ($costs.getNumberOfPallets() / city.getPalletsPerPersonPerHour()) + " hours since in " + 
+    	     city.getName() + " you pay " + city.getPersonCostPerHourEuro() + "€ per hour, and each person here can handle " +
+    	     city.getPalletsPerPersonPerHour() + " pallets per hour and there are " + $costs.getNumberOfPallets() + " pallets " );        
+    	}
+end
